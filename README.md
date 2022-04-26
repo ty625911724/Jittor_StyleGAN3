@@ -2,7 +2,7 @@
 
 ![Teaser image](./img/results.png)
 
-**Alias-Free Generative Adversarial Networks** <br>
+**Alias-Free Generative Adversarial Networks (NeurIPS 2021)** <br>
 Tero Karras, Miika Aittala, Samuli Laine, Erik H&auml;rk&ouml;nen, Janne Hellsten, Jaakko Lehtinen, Timo Aila<br>
 https://nvlabs.github.io/stylegan3<br>
 
