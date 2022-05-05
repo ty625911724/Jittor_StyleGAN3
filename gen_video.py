@@ -3,6 +3,7 @@ import os
 import re
 from typing import List, Optional, Tuple, Union
 
+import time
 import click
 import imageio
 import numpy as np
