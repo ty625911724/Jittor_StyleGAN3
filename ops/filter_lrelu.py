@@ -404,7 +404,7 @@ class Filtered_LReLU(jt.Function):
         if ret == 1: # no valid kernel!!!
             self.ret = 1
             x = x + bias.unsqueeze(-1).unsqueeze(-1)
-            ups = Upfirdn2d(up=self.up, padding=[self.px0, self.px1, self.py0, self.py1], gain=up**2, flip_filter=self.flip_filter)
+            ups = Upfirdn2d(up=self.up, padding=[self.px0, self.px1, self.py0, self.py1], gain=self.up**2, flip_filter=self.flip_filter)
             ups2 = Upfirdn2d(down=self.down, flip_filter=self.flip_filter)
             with jt.no_grad():
                 y = ups(x, self.fu)
