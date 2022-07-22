@@ -1,14 +1,15 @@
 import os
 import jittor as jt
 import numpy as np
-from ops.upfird2d import Upfirdn2d
+from .upfird2d import Upfirdn2d
+import time
 
 jt.flags.use_cuda = 1
 #----------------------------------------------------------------------------
 
 def code_op_read_file():
     # source_filename = name + '.cc'
-    with open("./ops/filter_lrelu.h", 'r', encoding='utf-8') as f:
+    with open("./models/stylegan3/ops/filter_lrelu.h", 'r', encoding='utf-8') as f:
         header_content = f.read()
     # with open(os.path.join(module_path, source_filename), 'r', encoding='utf-8') as f:
     #     source_content = f.read()
@@ -42,8 +43,8 @@ def filter_lrelu_act(x, si, sx, sy, gain, slope, clamp, writeSigns, y_shape, so_
         s_shape3 = si.shape[-1]
         s_shape2 = si.shape[2]
     cuda_src = f'''
-        @alias(x_inp, in0)
-        @alias(s_inp, in1)
+        @alias(x_inp, out1)
+        @alias(s_inp, out2)
         @alias(s_oup, out0)
         // Set CUDA device.
         // Validate arguments.
@@ -108,8 +109,9 @@ def filter_lrelu_act(x, si, sx, sy, gain, slope, clamp, writeSigns, y_shape, so_
         // Launch.
         CUDA_CHECK(cudaLaunchKernel(func, dim3(gx, gy, gz), bx, args, 0, stream));
     '''
-    so = jt.code(so_shape, jt.uint8, [x, si], cuda_src=cuda_src, cuda_header=cuda_header)
-    jt.sync_all()
+    so = jt.zeros(so_shape).uint8()
+    so, x, si = jt.code([], [so, x, si], cuda_src=cuda_src, cuda_header=cuda_header)
+    # jt.sync_all()
     return x, so
 
 class Filtered_LReLU(jt.Function):
@@ -128,12 +130,20 @@ class Filtered_LReLU(jt.Function):
         assert clamp is None or (clamp == float(clamp) and clamp >= 0)
         clamp = float(clamp if clamp is not None else 1 << 31)
         self.clamp = clamp
+        #self.fu = fu
+        #self.fd = fd
+        #if self.fu is None:
+        #    self.fu = jt.ones([1, 1])
+        #if self.fd is None:
+        #    self.fd = jt.ones([1, 1])         
+        
+        if fu is None:
+            fu = jt.ones([1, 1])
+        if fd is None:
+            fd = jt.ones([1, 1])         
         self.fu = fu
         self.fd = fd
-        if self.fu is None:
-            self.fu = jt.ones([1, 1])
-        if self.fd is None:
-            self.fd = jt.ones([1, 1])         
+
         assert 1 <= self.fu.ndim <= 2
         assert 1 <= self.fd.ndim <= 2
         if up == 1 and self.fu.ndim == 1 and self.fu.shape[0] == 1:
@@ -206,7 +216,6 @@ class Filtered_LReLU(jt.Function):
             @alias(s_inp, in4)
             @alias(y_oup, out0)
             @alias(s_oup, out1)
-            @alias(ret_oup, out2)
             cudaStream_t stream = 0;
             int up = {self.up};
             int down = {self.down};
@@ -238,10 +247,8 @@ class Filtered_LReLU(jt.Function):
             if (!test_spec.exec)
             {{
                 // No kernel found - return empty tensors and indicate missing kernel with return code of -1.
-                LOGir << "No kernel found! Back to generic mode!!";
-                int temp[1];
-                temp[0] = 1;
-                cudaMemcpy(ret_oup_p, &temp, 4, cudaMemcpyHostToDevice);
+                y_oup->set_shape({{0}});
+                return;
             }} else {{
                 // Input/output element size.
                 // int64_t sz = (x.dtype() == torch::kHalf) ? 2 : 4;
@@ -399,9 +406,9 @@ class Filtered_LReLU(jt.Function):
         sh = yh * self.down - (self.down - 1) + fdt_h
         sw = (sw_active + 15) & ~15
         s_shape = (x.shape[0], x.shape[1], sh, sw // 4)
-        output, sign_output, ret = jt.code([self.y_shape, s_shape, (1,)],[x.dtype, jt.uint8, jt.int32],[x, self.fu, self.fd, bias, self.si],cuda_header=cuda_header,cuda_src=cuda_src)
-        ret.sync()
-        if ret == 1: # no valid kernel!!!
+        output, sign_output = jt.code([self.y_shape, s_shape],[x.dtype, jt.uint8],[x, self.fu, self.fd, bias, self.si],cuda_header=cuda_header,cuda_src=cuda_src)
+        # ret.sync()
+        if output.numel() == 0: # no valid kernel!!!
             self.ret = 1
             x = x + bias.unsqueeze(-1).unsqueeze(-1)
             ups = Upfirdn2d(up=self.up, padding=[self.px0, self.px1, self.py0, self.py1], gain=self.up**2, flip_filter=self.flip_filter)
@@ -421,7 +428,8 @@ class Filtered_LReLU(jt.Function):
         return output
 
     def grad(self, grads):  # only support backward for bias and input now (in pytorch.)
-        # print(grads)
+        #print(grads)
+        #print("jittor: ", grads.shape)
         _, _, xh, xw = self.x_shape
         _, _, yh, yw = self.y_shape
         pp = [
@@ -434,7 +442,7 @@ class Filtered_LReLU(jt.Function):
         ff = 1 if not self.flip_filter else 0
         sx = self.sx - (self.fu.shape[-1] - 1) + self.px0
         sy = self.sy - (self.fu.shape[0]  - 1) + self.py0
-        # print("jittor: ", grads.shape)
+        #print("jittor: ", grads.shape)
         # print("jittor: ", pp, gg, ff, sx, sy)
         if self.ret == 1:
             # no valid kernel in forward. Use upfirdn2d instead.
@@ -651,8 +659,32 @@ class Filtered_LReLU(jt.Function):
                 }}
             }}
         '''
+        
+        '''
+        print("jittor before jt.code")
+        memory = {}
+        memory['x_shape'] = self.x_shape
+        memory['x_dtype'] = self.x_dtype
+        #print("time sleep")
+        memory['grads'] = grads
+        memory['fd'] = self.fd
+        memory['fu'] = self.fu
+        print("before zero")
+        memory['zeros'] = jt.zeros(self.x_shape[1])
+        print("end zero")
+        memory['save_so'] = self.save_so
+        memory['cuda_header'] = cuda_header
+        memory['cuda_src'] = cuda_src
+        jt.save(memory, './home/liufenglin/210_16T/code/jittor_repositories/DeepFaceVideoEditingDebug_no_weight/memory.pkl')
+        time.sleep(20000)
+        print("time sleep")
+        '''
+        
+        #test =  jt.zeros(self.x_shape[1])
         dx = jt.code(self.x_shape, self.x_dtype, [grads, self.fd, self.fu, jt.zeros(self.x_shape[1]), self.save_so], cuda_header=cuda_header, cuda_src=cuda_src)
+        #print("jittor after jt.code")
         db = dx.sum([0, 2, 3])
+        #print("jittor over: ", dx.shape)
         return dx, db
 
 
